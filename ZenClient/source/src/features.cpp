@@ -16,6 +16,7 @@ using U::V3;
 namespace {
 
 const char* GAME = "Assembly-CSharp.dll";
+const char* UI_DLL = "UnityEngine.UI.dll";
 
 // ---------------------------------------------------------------- hooking helpers
 template <typename T> bool Hook(void* target, void* detour, T** orig) {
@@ -70,10 +71,21 @@ void (*o_SetLockState)(int) = nullptr;
 void (*o_SetVisible)(bool) = nullptr;
 int (*f_GetLockState)() = nullptr;
 
+// ---------------------------------------------------------------- quick start (Days intro)
+void* k_Days = nullptr;
+void* k_WaitForSeconds = nullptr;
+int off_curDay = -1, off_extraDay = -1, off_blackScreen = -1, off_audioHold = -1;
+int off_sdState = -1, off_sdCurrent = -1, off_sdThis = -1;    // <StartDays>d__ fields
+int off_tlCurrent = -1;                                       // <Timerloading>d__ <>2__current
+const MethodInfo* m_CrossFadeAlpha = nullptr;
+const MethodInfo* m_AudioStop = nullptr;
+using MoveNextFn = bool (*)(Il2CppObject*, const MethodInfo*);
+MoveNextFn o_StartDaysMoveNext = nullptr, o_TimerloadingMoveNext = nullptr;
+
 // ---------------------------------------------------------------- runtime state
 int g_lastFrame = -1;
 float g_sceneTimer = 0, g_espTimer = 0, g_uiTimer = 0, g_coinTimer = 0, g_devTimer = 0;
-uint32_t g_mainMenuH = 0, g_playerH = 0;
+uint32_t g_mainMenuH = 0, g_playerH = 0, g_daysH = 0;
 bool g_inMenu = false, g_inGame = false;
 int g_itemLayer = -2;
 
@@ -293,6 +305,8 @@ void TrackScene() {
     bool wasMenu = g_inMenu;
     g_inMenu = findOne(k_MainMenu, g_mainMenuH);
     g_inGame = findOne(k_MobileFPS, g_playerH);
+    if (g_inGame) findOne(k_Days, g_daysH);
+    else { il2::GcFree(g_daysH); g_daysH = 0; }
     if (wasMenu != g_inMenu) LOG("main menu %s", g_inMenu ? "entered" : "left");
 }
 
@@ -504,6 +518,193 @@ void UpdateView() {
         g_timeApplied = -1.f;
     }
 }
+
+// ---------------------------------------------------------------- full bright
+// Darker difficulties (Hard..Hollow) are made with a black fog that ends 6-7 m away (Days.Start).
+// Full bright turns the fog off, sets a flat bright ambient light and adds a shadowless directional light
+// that follows the camera, so baked dark rooms are lit too. Everything is restored when it is switched off.
+struct Color { float r, g, b, a; };
+struct Quat { float x, y, z, w; };
+namespace fb {
+bool (*getFog)() = nullptr;
+void (*setFog)(bool) = nullptr;
+int (*getAmbMode)() = nullptr;
+void (*setAmbMode)(int) = nullptr;
+void (*getAmb)(Color*) = nullptr;
+void (*setAmb)(Color*) = nullptr;
+float (*getAmbInt)() = nullptr;
+void (*setAmbInt)(float) = nullptr;
+void (*createGo)(Il2CppObject*, Il2CppString*) = nullptr;
+Il2CppObject* (*addComp)(Il2CppObject*, Il2CppObject*) = nullptr;
+void (*lightType)(Il2CppObject*, int) = nullptr;
+void (*lightIntensity)(Il2CppObject*, float) = nullptr;
+void (*lightColor)(Il2CppObject*, Color*) = nullptr;
+void (*lightShadows)(Il2CppObject*, int) = nullptr;
+void (*lightRenderMode)(Il2CppObject*, int) = nullptr;
+void (*lightCulling)(Il2CppObject*, int) = nullptr;
+void (*trGetRot)(Il2CppObject*, Quat*) = nullptr;
+void (*trSetRot)(Il2CppObject*, Quat*) = nullptr;
+void (*destroy)(Il2CppObject*, float) = nullptr;
+int (*getLm)(Il2CppObject*, int) = nullptr;          // (renderer, LightmapType)
+void (*setLm)(Il2CppObject*, int, int) = nullptr;     // (renderer, index, LightmapType)
+void* kLight = nullptr;
+struct LmSaved { uint32_t h; int idx; };
+std::vector<LmSaved> lmSaved;
+float lmTimer = 0.f;
+bool ok = false;
+
+bool applied = false;
+bool origFog = false, fogSet = false; int origMode = 0; Color origAmb{}; float origInt = 1.f; bool haveOrig = false;
+uint32_t lightH = 0, lightGoH = 0;
+float lastStrength = -1.f;
+
+template <typename T> void R(T& f, const char* name) { f = reinterpret_cast<T>(il2::ResolveICall(name)); }
+template <typename T> void R2(T& f, const char* a, const char* b) {
+    f = reinterpret_cast<T>(il2::ResolveICall(a));
+    if (!f) f = reinterpret_cast<T>(il2::ResolveICall(b));
+}
+
+void Init() {
+    R(getFog, "UnityEngine.RenderSettings::get_fog()");
+    R(setFog, "UnityEngine.RenderSettings::set_fog(System.Boolean)");
+    R(getAmbMode, "UnityEngine.RenderSettings::get_ambientMode()");
+    R(setAmbMode, "UnityEngine.RenderSettings::set_ambientMode(UnityEngine.Rendering.AmbientMode)");
+    R2(getAmb, "UnityEngine.RenderSettings::get_ambientLight_Injected(UnityEngine.Color&)", "UnityEngine.RenderSettings::get_ambientSkyColor_Injected(UnityEngine.Color&)");
+    R2(setAmb, "UnityEngine.RenderSettings::set_ambientLight_Injected(UnityEngine.Color&)", "UnityEngine.RenderSettings::set_ambientSkyColor_Injected(UnityEngine.Color&)");
+    R(getAmbInt, "UnityEngine.RenderSettings::get_ambientIntensity()");
+    R(setAmbInt, "UnityEngine.RenderSettings::set_ambientIntensity(System.Single)");
+    R(createGo, "UnityEngine.GameObject::Internal_CreateGameObject(UnityEngine.GameObject,System.String)");
+    R(addComp, "UnityEngine.GameObject::Internal_AddComponentWithType(System.Type)");
+    R(lightType, "UnityEngine.Light::set_type(UnityEngine.LightType)");
+    R(lightIntensity, "UnityEngine.Light::set_intensity(System.Single)");
+    R(lightColor, "UnityEngine.Light::set_color_Injected(UnityEngine.Color&)");
+    R(lightShadows, "UnityEngine.Light::set_shadows(UnityEngine.LightShadows)");
+    R(lightRenderMode, "UnityEngine.Light::set_renderMode(UnityEngine.LightRenderMode)");
+    R(lightCulling, "UnityEngine.Light::set_cullingMask(System.Int32)");
+    R(trGetRot, "UnityEngine.Transform::get_rotation_Injected(UnityEngine.Quaternion&)");
+    R(trSetRot, "UnityEngine.Transform::set_rotation_Injected(UnityEngine.Quaternion&)");
+    R(destroy, "UnityEngine.Object::Destroy(UnityEngine.Object,System.Single)");
+    R(getLm, "UnityEngine.Renderer::GetLightmapIndex(UnityEngine.LightmapType)");
+    R(setLm, "UnityEngine.Renderer::SetLightmapIndex(System.Int32,UnityEngine.LightmapType)");
+    kLight = il2::Class("UnityEngine.CoreModule.dll", "UnityEngine", "Light");
+    ok = getFog && setFog && getAmbMode && setAmbMode && getAmb && setAmb && getAmbInt && setAmbInt;
+    LOG("full bright: render=%d lightmap=%d light=%d/%d/%d/%d rot=%d", ok, getLm && setLm, createGo != nullptr, addComp != nullptr, lightType != nullptr,
+        kLight != nullptr, trSetRot != nullptr);
+}
+
+Il2CppObject* EnsureLight() {
+    Il2CppObject* l = il2::GcGet(lightH);
+    if (il2::Alive(l)) return l;
+    il2::GcFree(lightH); il2::GcFree(lightGoH); lightH = lightGoH = 0;
+    if (!createGo || !addComp || !kLight || !lightType || !U::C.GameObject) return nullptr;
+    Il2CppObject* go = il2::New(U::C.GameObject);
+    if (!go) return nullptr;
+    createGo(go, il2::Str("ZenClient FullBright"));
+    if (!il2::Alive(go)) return nullptr;
+    l = addComp(go, il2::TypeObject(kLight));
+    if (!il2::Alive(l)) return nullptr;
+    lightType(l, 1);                           // Directional
+    if (lightShadows) lightShadows(l, 0);      // None
+    if (lightRenderMode) lightRenderMode(l, 1);// ForcePixel
+    if (lightCulling) lightCulling(l, -1);
+    Color w{1.f, 0.98f, 0.94f, 1.f};
+    if (lightColor) lightColor(l, &w);
+    lightGoH = il2::GcNew(go);
+    lightH = il2::GcNew(l);
+    lastStrength = -1.f;
+    LOG("full bright: light created");
+    return l;
+}
+
+void DestroyLight() {
+    Il2CppObject* go = il2::GcGet(lightGoH);
+    if (il2::Alive(go) && destroy) destroy(go, 0.f);
+    il2::GcFree(lightH); il2::GcFree(lightGoH); lightH = lightGoH = 0;
+}
+
+// Baked lightmaps keep rooms dark whatever the lights do; while full bright is on, renderers are drawn
+// without their lightmap (lit by the flat ambient + the camera light). The original indices are restored.
+void StripLightmaps() {
+    if (!getLm || !setLm || !U::C.Renderer) return;
+    // forget renderers destroyed by a level reload
+    lmSaved.erase(std::remove_if(lmSaved.begin(), lmSaved.end(), [](const LmSaved& e) {
+        if (il2::Alive(il2::GcGet(e.h))) return false;
+        il2::GcFree(e.h); return true;
+    }), lmSaved.end());
+    Il2CppArray* a = U::FindObjectsOfType(U::C.Renderer);
+    int n = 0;
+    for (int i = 0; i < il2::ArrayLen(a); ++i) {
+        Il2CppObject* r = (Il2CppObject*)a->items[i];
+        int idx = getLm(r, 0);                    // StaticLightmap
+        if (idx < 0 || idx >= 0xFFFE) continue;   // not lightmapped (or already stripped)
+        lmSaved.push_back({il2::GcNew(r), idx});
+        setLm(r, -1, 0);
+        ++n;
+    }
+    if (n) LOG("full bright: %d renderers drawn without lightmaps (%zu total)", n, lmSaved.size());
+}
+void RestoreLightmaps() {
+    for (auto& e : lmSaved) {
+        Il2CppObject* r = il2::GcGet(e.h);
+        if (il2::Alive(r) && setLm) setLm(r, e.idx, 0);
+        il2::GcFree(e.h);
+    }
+    lmSaved.clear();
+}
+
+void Restore() {
+    if (!applied) return;
+    RestoreLightmaps();
+    applied = false;
+    if (ok && haveOrig) {
+        setFog(origFog);
+        setAmbMode(origMode);
+        setAmb(&origAmb);
+        setAmbInt(origInt);
+    }
+    haveOrig = false;
+    DestroyLight();
+    LOG("full bright: restored (fog=%d)", origFog);
+}
+
+bool Near(const Color& a, const Color& b) { return std::fabs(a.r - b.r) < 1e-3f && std::fabs(a.g - b.g) < 1e-3f && std::fabs(a.b - b.b) < 1e-3f; }
+
+void Update(bool inGame, float dt) {
+    bool want = g_cfg.fullBright && inGame && ok;
+    if (!want) { Restore(); return; }
+    float k = g_cfg.fbStrength;
+    Color amb{0.9f * k, 0.9f * k, 0.9f * k, 1.f};
+    // capture what the game uses (the game sets fog/ambient when a level loads, so re-capture on changes)
+    Color curAmb{}; getAmb(&curAmb);
+    bool curFog = getFog();
+    int curMode = getAmbMode();
+    if (!applied) {
+        origFog = curFog; fogSet = curFog; origMode = curMode; origAmb = curAmb; origInt = getAmbInt(); haveOrig = true;
+        applied = true;
+        lmTimer = 0.f;
+        LOG("full bright: on (game fog=%d mode=%d amb=%.2f %.2f %.2f)", origFog, origMode, origAmb.r, origAmb.g, origAmb.b);
+    } else {
+        if (curFog != fogSet) origFog = curFog;    // the game changed the fog itself (a level was loaded)
+        if (curMode != 3 && curMode != origMode) origMode = curMode;
+        if (!Near(curAmb, amb) && !Near(curAmb, origAmb)) origAmb = curAmb;
+    }
+    fogSet = g_cfg.fbNoFog ? false : origFog;
+    if (curFog != fogSet) setFog(fogSet);
+    if (curMode != 3) setAmbMode(3);           // Flat
+    if (!Near(curAmb, amb)) setAmb(&amb);
+    setAmbInt(1.f);
+    // camera light
+    Il2CppObject* l = EnsureLight();
+    Il2CppObject* cam = U::MainCamera();
+    if (l && cam && trGetRot && trSetRot) {
+        Quat q{}; trGetRot(U::TransformOf(cam), &q);
+        trSetRot(U::TransformOf(l), &q);
+        if (lightIntensity && std::fabs(lastStrength - k) > 1e-4f) { lightIntensity(l, 0.45f * k); lastStrength = k; }
+    }
+    lmTimer -= dt;
+    if (lmTimer <= 0.f) { lmTimer = 1.5f; StripLightmaps(); }
+}
+} // namespace fb
 
 // ---------------------------------------------------------------- custom main-menu UI
 void RestoreCanvases() {
@@ -790,6 +991,7 @@ void DevTick(float dt) {
             if (e.handle) { LOG("pressing primary '%s'", e.label.c_str()); ActionUiPress(e); }
         } else if (sscanf(c.c_str(), "coins %f", &v) == 1) ActionGiveCoins(v, false);
         else if (sscanf(c.c_str(), "setcoins %f", &v) == 1) ActionGiveCoins(v, true);
+        else if (sscanf(c.c_str(), "setprefi %127s %f", a, &v) == 2) { U::PrefSetInt(a, (int)v); U::PrefSave(); LOG("pref %s set to %d", a, (int)v); }
         else if (sscanf(c.c_str(), "pref %127s", a) == 1) LOG("pref %s int=%d float=%.2f has=%d", a, U::PrefGetInt(a, -1), U::PrefGetFloat(a, -1), U::PrefHasKey(a));
         else DevPostRender(c);   // menu/tab/cfg/shot/click are handled on the render thread
     }
@@ -832,13 +1034,22 @@ void MainTick() {
     UpdateGodUpkeep(dt);
     UpdateCustomUi(dt);
     UpdateView();
+    fb::Update(g_inGame, dt);
 
     g_coinTimer -= dt;
     if (g_coinTimer <= 0) {
         g_coinTimer = 0.3f;
         float coins = U::PrefGetFloat("Coins", 0);
+        int day = 0, dayMax = 0;
+        Il2CppObject* days = il2::GcGet(g_daysH);
+        if (g_inGame && il2::Alive(days) && off_curDay >= 0) {
+            day = (int)std::lround(il2::At<float>(days, off_curDay));
+            dayMax = off_extraDay >= 0 && il2::At<bool>(days, off_extraDay) ? 6 : 5;
+        }
         std::lock_guard<std::mutex> lk(g_snap.mtx);
         g_snap.coins = coins;
+        g_snap.day = day;
+        g_snap.dayMax = dayMax;
         g_snap.inMainMenu = g_inMenu;
         g_snap.inGame = g_inGame;
     }
@@ -898,6 +1109,62 @@ void ScaleSpeedOnce() {
 }
 float hk_GetAxis(Il2CppString* n, const MethodInfo* mi) { ScaleSpeedOnce(); return o_GetAxis(n, mi); }
 float hk_GetAxisRaw(Il2CppString* n, const MethodInfo* mi) { ScaleSpeedOnce(); return o_GetAxisRaw(n, mi); }
+
+// ---------------------------------------------------------------- quick start
+// Days.Start / Days.StartNew run the coroutine StartDays: wait 2 s -> (new day: reset the house) wait 3 s ->
+// black screen + "DAY N" + sound, wait 2 s -> wake-up animation in bed, wait 10.5 s -> player enabled,
+// enemies spawned. With quick start the first step only waits one frame (so every Start() of the scene has
+// run), then all remaining steps are executed at once with the waits skipped.
+bool IsWait(Il2CppObject* o) { return o && k_WaitForSeconds && *reinterpret_cast<void**>(o) == k_WaitForSeconds; }
+
+void FinishIntroVisuals(Il2CppObject* days) {
+    if (!il2::Alive(days)) return;
+    // the black screen fades out over 2.5 s in the original - make it instant
+    Il2CppObject* bs = off_blackScreen >= 0 ? il2::At<Il2CppObject*>(days, off_blackScreen) : nullptr;
+    if (il2::Alive(bs) && m_CrossFadeAlpha) {
+        float a = 0.f, d = 0.f; bool ign = true;
+        void* args[3] = {&a, &d, &ign};
+        il2::Invoke(m_CrossFadeAlpha, bs, args);
+    }
+    // "DAY N" sting and bed sounds
+    Il2CppObject* au = off_audioHold >= 0 ? il2::At<Il2CppObject*>(days, off_audioHold) : nullptr;
+    if (il2::Alive(au) && m_AudioStop) il2::Invoke(m_AudioStop, au, nullptr);
+}
+
+bool hk_StartDaysMoveNext(Il2CppObject* self, const MethodInfo* mi) {
+    if (!g_cfg.skipIntro || off_sdState < 0 || off_sdCurrent < 0) return o_StartDaysMoveNext(self, mi);
+    int state = il2::At<int>(self, off_sdState);
+    Il2CppObject* days = off_sdThis >= 0 ? il2::At<Il2CppObject*>(self, off_sdThis) : nullptr;
+    // Days.StartNew increments CurrentDay before starting the coroutine, so day > 1 = a new day after being caught
+    bool newDay = il2::Alive(days) && off_curDay >= 0 && il2::At<float>(days, off_curDay) > 1.5f;
+    if (newDay && !g_cfg.skipIntroNewDay) return o_StartDaysMoveNext(self, mi);
+    if (state == 0) {
+        bool r = o_StartDaysMoveNext(self, mi);
+        if (r && IsWait(il2::At<Il2CppObject*>(self, off_sdCurrent))) il2::At<Il2CppObject*>(self, off_sdCurrent) = nullptr;  // one frame
+        return r;
+    }
+    if (state != 1) {
+        // a sequence that was already running when quick start got switched on: just shorten the current wait
+        bool r = o_StartDaysMoveNext(self, mi);
+        if (r && IsWait(il2::At<Il2CppObject*>(self, off_sdCurrent))) il2::At<Il2CppObject*>(self, off_sdCurrent) = nullptr;
+        return r;
+    }
+    for (int i = 0; i < 32; ++i) {
+        bool r = o_StartDaysMoveNext(self, mi);
+        if (!r) { FinishIntroVisuals(days); LOG("quick start: day intro skipped (%d steps)", i + 1); return false; }
+        if (!IsWait(il2::At<Il2CppObject*>(self, off_sdCurrent))) return r;   // unknown yield: let Unity handle it
+    }
+    return true;
+}
+
+bool hk_TimerloadingMoveNext(Il2CppObject* self, const MethodInfo* mi) {
+    bool r = o_TimerloadingMoveNext(self, mi);
+    if (r && g_cfg.skipIntro && g_cfg.skipLoading && off_tlCurrent >= 0 && IsWait(il2::At<Il2CppObject*>(self, off_tlCurrent))) {
+        il2::At<Il2CppObject*>(self, off_tlCurrent) = nullptr;   // load the level on the next frame instead of in 3.5 s
+        LOG("quick start: loading screen skipped");
+    }
+    return r;
+}
 
 // ---------------------------------------------------------------- detours
 void hk_EventSystemUpdate(Il2CppObject* self, const MethodInfo* mi) {
@@ -1066,6 +1333,28 @@ bool FeaturesInit() {
         Hook(il2::Fn(input, "GetAxis", 1), reinterpret_cast<void*>(&hk_GetAxis), &o_GetAxis);
         Hook(il2::Fn(input, "GetAxisRaw", 1), reinterpret_cast<void*>(&hk_GetAxisRaw), &o_GetAxisRaw);
     }
+    fb::Init();
+    // Quick start
+    k_Days = il2::Class(GAME, "", "Days");
+    k_WaitForSeconds = il2::Class("UnityEngine.CoreModule.dll", "UnityEngine", "WaitForSeconds");
+    off_curDay = il2::FieldOffset(k_Days, "CurrentDay");
+    off_extraDay = il2::FieldOffset(k_Days, "ExtraDay");
+    off_blackScreen = il2::FieldOffset(k_Days, "BlackScreen");
+    off_audioHold = il2::FieldOffset(k_Days, "AudioHold");
+    m_CrossFadeAlpha = il2::Method(il2::Class(UI_DLL, "UnityEngine.UI", "Graphic"), "CrossFadeAlpha", 3);
+    m_AudioStop = il2::Method(il2::Class("UnityEngine.AudioModule.dll", "UnityEngine", "AudioSource"), "Stop", 0);
+    if (void* sd = il2::Nested(k_Days, "<StartDays>d__")) {
+        off_sdState = il2::FieldOffset(sd, "<>1__state");
+        off_sdCurrent = il2::FieldOffset(sd, "<>2__current");
+        off_sdThis = il2::FieldOffset(sd, "<>4__this");
+        Hook(il2::Fn(sd, "MoveNext", 0), reinterpret_cast<void*>(&hk_StartDaysMoveNext), &o_StartDaysMoveNext);
+    }
+    if (void* tl = il2::Nested(k_MainMenu, "<Timerloading>d__")) {
+        off_tlCurrent = il2::FieldOffset(tl, "<>2__current");
+        Hook(il2::Fn(tl, "MoveNext", 0), reinterpret_cast<void*>(&hk_TimerloadingMoveNext), &o_TimerloadingMoveNext);
+    }
+    LOG("quick start: day=%d extra=%d black=%d audio=%d sd=%d/%d/%d tl=%d hooks=%d/%d", off_curDay, off_extraDay, off_blackScreen, off_audioHold,
+        off_sdState, off_sdCurrent, off_sdThis, off_tlCurrent, o_StartDaysMoveNext != nullptr, o_TimerloadingMoveNext != nullptr);
     Hook(il2::Fn(il2::Class(GAME, "", "PickRay"), "Update", 0), reinterpret_cast<void*>(&hk_PickRayUpdate), &o_PickRayUpdate);
     Hook(il2::Fn(il2::Class(GAME, "", "Paused"), "Update", 0), reinterpret_cast<void*>(&hk_PausedUpdate), &o_PausedUpdate);
     Hook(il2::Fn(il2::Class(GAME, "", "KeyBindManage"), "Update", 0), reinterpret_cast<void*>(&hk_KeyBindUpdate), &o_KeyBindUpdate);

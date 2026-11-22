@@ -14,6 +14,9 @@ struct Config {
     bool hbNpc = true;
     bool hbItems = true;
     bool hbLabels = true;
+    bool fullBright = false;       // no darkness / fog on any difficulty
+    bool fbNoFog = true;
+    float fbStrength = 1.f;
     // Player
     bool god = false;
     bool invisible = false;
@@ -85,6 +88,7 @@ struct Config {
     int wmPos = 0;                 // 0 top centre, 1 top left, 2 top right, 3 bottom left, 4 bottom centre, 5 bottom right
     int wmStyle = 0;               // 0 pill, 1 rectangle, 2 text only
     bool wmName = true, wmFps = true, wmTime = false, wmCoins = false, wmStatus = false, wmDot = true;
+    bool wmDay = true;             // current day while in a run
     std::string wmText = "ZenClient";
     float wmScale = 1.f, wmAlpha = 0.93f;
     // ---- hitboxes
@@ -103,6 +107,10 @@ struct Config {
     float fov = 75.f;
     bool timeOn = false;
     float timeScale = 1.f;
+    // ---- loading
+    bool skipIntro = false;        // no "DAY N" screen / waking up in bed when a run starts or restarts
+    bool skipIntroNewDay = true;   // ...also when a new day starts after being caught
+    bool skipLoading = true;       // no 3.5 s loading screen after "Play" in the main menu (while skipIntro is on)
     // Theme
     float accent[3] = {0.27f, 0.87f, 0.55f};
     float opacity = 0.95f;
@@ -158,6 +166,8 @@ struct Snapshot {
     bool inMainMenu = false;
     bool inGame = false;
     float coins = 0;
+    int day = 0;                        // current day of the run (0 = unknown / not in a run)
+    int dayMax = 0;                     // last day (5, or 6 with the extra day)
     std::vector<UiElem> ui;
     std::vector<std::string> uiTexts;   // visible informational texts (custom UI)
     bool uiLoading = false;

@@ -21,6 +21,7 @@ const MethodInfo* Method(void* klass, const char* name, int argc);
 const MethodInfo* MethodSig(void* klass, const char* name, const char* const* params, int argc);  // exact parameter types
 void* Fn(void* klass, const char* name, int argc);          // methodPointer or nullptr
 int FieldOffset(void* klass, const char* name);              // -1 if missing
+void* Nested(void* outer, const char* prefix);               // nested class whose name starts with prefix (coroutines: "<Name>d__")
 bool MethodReturnsVoid(const MethodInfo* m);
 const char* ClassName(void* klass);
 const char* ObjClassName(Il2CppObject* o);
@@ -29,6 +30,7 @@ bool IsSubclass(void* klass, void* parent);
 Il2CppString* Str(const char* utf8);
 std::string ToUtf8(Il2CppString* s);
 Il2CppObject* TypeObject(void* klass);                       // System.Type for a class
+Il2CppObject* New(void* klass);                              // raw managed allocation (no constructor)
 
 // Safe managed call (exceptions are caught by the runtime).
 Il2CppObject* Invoke(const MethodInfo* m, void* obj, void** args, bool* ok = nullptr);

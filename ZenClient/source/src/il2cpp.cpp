@@ -45,6 +45,8 @@ API(const char*, il2cpp_field_get_name, (void* field))
 API(void*, il2cpp_image_get_class, (void* image, size_t i))
 API(void, il2cpp_thread_detach, (void* thread))
 API(void*, il2cpp_field_get_type, (void* field))
+API(void*, il2cpp_class_get_nested_types, (void* klass, void** iter))
+API(Il2CppObject*, il2cpp_object_new, (void* klass))
 #undef API
 
 static void* g_domain = nullptr;
@@ -72,7 +74,7 @@ bool Init() {
     L(il2cpp_class_get_methods); L(il2cpp_method_get_name); L(il2cpp_method_get_param_count);
     L(il2cpp_method_get_param); L(il2cpp_method_is_generic); L(il2cpp_class_get_parent);
     L(il2cpp_image_get_class_count); L(il2cpp_class_get_fields); L(il2cpp_field_get_name); L(il2cpp_image_get_class);
-    L(il2cpp_field_get_type);
+    L(il2cpp_field_get_type); L(il2cpp_class_get_nested_types); L(il2cpp_object_new);
 #undef L
     if (!ok) return false;
     // il2cpp_domain_get() lazily creates the domain, so calling it before the runtime has started
@@ -154,6 +156,18 @@ void* Fn(void* klass, const char* name, int argc) {
     return m ? m->methodPointer : nullptr;
 }
 
+void* Nested(void* outer, const char* prefix) {
+    if (!outer) return nullptr;
+    size_t n = strlen(prefix);
+    void* it = nullptr;
+    while (void* k = il2cpp_class_get_nested_types(outer, &it)) {
+        const char* nm = il2cpp_class_get_name(k);
+        if (nm && strncmp(nm, prefix, n) == 0) return k;
+    }
+    LOG("nested class not found: %s/%s*", il2cpp_class_get_name(outer), prefix);
+    return nullptr;
+}
+
 int FieldOffset(void* klass, const char* name) {
     if (!klass) return -1;
     void* f = il2cpp_class_get_field_from_name(klass, name);
@@ -182,6 +196,8 @@ std::string ToUtf8(Il2CppString* s) {
     WideCharToMultiByte(CP_UTF8, 0, reinterpret_cast<const wchar_t*>(s->chars), s->length, out.data(), n, nullptr, nullptr);
     return out;
 }
+
+Il2CppObject* New(void* klass) { return klass ? il2cpp_object_new(klass) : nullptr; }
 
 Il2CppObject* TypeObject(void* klass) { return klass ? il2cpp_type_get_object(il2cpp_class_get_type(klass)) : nullptr; }
 

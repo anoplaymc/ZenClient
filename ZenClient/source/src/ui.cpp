@@ -431,7 +431,10 @@ void BuildFonts(float h) {
 // ------------------------------------------------------------------ watermark
 void DrawWatermark(ImDrawList* dl, ImVec2 disp) {
     const Config& c = g_cfg;
-    bool any = c.wmName || c.wmFps || c.wmTime || c.wmCoins || c.wmStatus;
+    bool inGame, inMenu; float coins; int day, dayMax;
+    { std::lock_guard<std::mutex> lk(g_snap.mtx); inGame = g_snap.inGame; inMenu = g_snap.inMainMenu; coins = g_snap.coins; day = g_snap.day; dayMax = g_snap.dayMax; }
+    bool showDay = c.wmDay && inGame && !inMenu && day > 0;
+    bool any = c.wmName || c.wmFps || c.wmTime || c.wmCoins || c.wmStatus || showDay;
     g_wmAnim = Approach(g_wmAnim, c.watermark && any ? 1.f : 0.f, 9.f);
     if (g_wmAnim <= 0.002f) return;
     ImGuiIO& io = ImGui::GetIO();
@@ -444,9 +447,11 @@ void DrawWatermark(ImDrawList* dl, ImVec2 disp) {
     char buf[64];
     if (c.wmFps) { snprintf(buf, sizeof buf, "%d FPS", (int)std::lround(g_fpsShown)); segs.push_back({buf, F_Body, RGBA(200, 205, 214)}); }
     if (c.wmTime) { SYSTEMTIME st; GetLocalTime(&st); snprintf(buf, sizeof buf, "%02d:%02d", st.wHour, st.wMinute); segs.push_back({buf, F_Body, RGBA(200, 205, 214)}); }
-    bool inGame, inMenu; float coins;
-    { std::lock_guard<std::mutex> lk(g_snap.mtx); inGame = g_snap.inGame; inMenu = g_snap.inMainMenu; coins = g_snap.coins; }
     if (c.wmCoins) { snprintf(buf, sizeof buf, "%.0f монет", coins); segs.push_back({buf, F_Body, RGBA(255, 214, 120)}); }
+    if (showDay) {
+        if (dayMax > 0) snprintf(buf, sizeof buf, "День %d / %d", day, dayMax); else snprintf(buf, sizeof buf, "День %d", day);
+        segs.push_back({buf, F_Body, day >= dayMax && dayMax > 0 ? RGBA(255, 110, 120) : RGBA(200, 205, 214)});
+    }
     if (c.wmStatus) segs.push_back({inMenu ? "Главное меню" : "В игре", F_Body, Accent()});
     (void)inGame;
     float k = c.wmScale;
@@ -629,8 +634,8 @@ bool ChoiceRow(const char* id, const char* title, int* v, const char* const* nam
 // ------------------------------------------------------------------ menu tabs
 struct TabDef { const char* name; const char* sub; Icon icon; };
 const TabDef kTabs[] = {
-    {"Визуал", "Хитбоксы NPC и предметов, их вид", IC_EYE},
-    {"Игрок", "Бессмертие, движение, обзор и мир", IC_USER},
+    {"Визуал", "Full Bright, хитбоксы NPC и предметов", IC_EYE},
+    {"Игрок", "Бессмертие, движение, обзор, загрузка и мир", IC_USER},
     {"Ресурсы", "Монеты и открытие предметов", IC_COIN},
     {"Интерфейс", "Новый вид главного меню", IC_LAYOUT},
     {"Тема", "Цвета, анимации и окно меню", IC_PALETTE},
@@ -640,6 +645,13 @@ const TabDef kTabs[] = {
 const int kTabCount = 7;
 
 void TabVisuals() {
+    SectionLabel("ОСВЕЩЕНИЕ");
+    ToggleRow("fb", "Full Bright", "Светло везде и на любой сложности: убирает тьму и туман Hard, Extreme, Impossible и Hollow", &g_cfg.fullBright);
+    if (BeginExpand("##fbsub", g_cfg.fullBright, 40 * S + 62 * S + 8 * S)) {
+        ToggleRow("fbf", "Убрать туман", nullptr, &g_cfg.fbNoFog, true);
+        SliderRow("fbs", "Яркость", &g_cfg.fbStrength, 0.3f, 2.f, "x%.2f");
+        EndExpand();
+    }
     SectionLabel("ХИТБОКСЫ");
     ToggleRow("hb", "Показывать хитбоксы", "Рамки вокруг врагов и предметов, видимые сквозь стены", &g_cfg.hitboxes);
     if (BeginExpand("##hbsub", g_cfg.hitboxes, 3 * 40 * S + 8 * S)) {
@@ -687,6 +699,13 @@ void TabPlayer() {
     ToggleRow("fov", "Свой угол обзора", "Поле зрения камеры (FOV) во время игры", &g_cfg.fovOn);
     if (BeginExpand("##fovsub", g_cfg.fovOn, 62 * S)) {
         SliderRow("fv", "Угол обзора", &g_cfg.fov, 40.f, 130.f, "%.0f°");
+        EndExpand();
+    }
+    SectionLabel("ЗАГРУЗКА");
+    ToggleRow("qs", "Быстрый старт", "Без экрана «DAY 1» и пробуждения в кровати — игра начинается сразу (загрузка и Restart Run)", &g_cfg.skipIntro);
+    if (BeginExpand("##qssub", g_cfg.skipIntro, 2 * 40 * S + 8 * S)) {
+        ToggleRow("qsd", "Также новый день после поимки", nullptr, &g_cfg.skipIntroNewDay, true);
+        ToggleRow("qsl", "Без экрана загрузки из меню", nullptr, &g_cfg.skipLoading, true);
         EndExpand();
     }
     SectionLabel("МИР");
@@ -878,6 +897,7 @@ void TabClient() {
         ToggleRow("wfp", "FPS", nullptr, &c.wmFps, true);
         ToggleRow("wti", "Время", nullptr, &c.wmTime, true);
         ToggleRow("wco", "Монеты", nullptr, &c.wmCoins, true);
+        ToggleRow("wdy", "Счётчик дней (в игре)", nullptr, &c.wmDay, true);
         ToggleRow("wst", "Где вы (меню / игра)", nullptr, &c.wmStatus, true);
         ToggleRow("wdt", "Зелёный индикатор", nullptr, &c.wmDot, true);
         SliderRow("wsc", "Размер", &c.wmScale, 0.6f, 2.f, "x%.2f");
