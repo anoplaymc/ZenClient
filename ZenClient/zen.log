@@ -1,0 +1,25 @@
+[23:56:42.532] ZenClient 1.0 starting, base=Z:\home\anoplay\Documents\Granny_Legacy\ZenClient\
+[23:56:42.532] config loaded
+[23:56:42.997] overlay hooks: present=00006ffffcfaaa30 present1=00006ffffcfaaf80 resize=00006ffffcfa8fa0 ok=1
+[23:56:43.298] il2cpp ready (51 assemblies)
+[23:56:43.299] unity wrappers resolved, missing=0
+[23:56:43.299] offsets cc=40 moveDir=84 killed=169
+[23:56:43.299] patch god: AtticSpider.StingKill is not void, skipped
+[23:56:43.299] patch groups: god=20 invis=2 freeze=9 fall=1
+[23:56:43.375] features init done (drivers ok=1)
+[23:56:43.375] ZenClient ready
+[23:56:43.845] backbuffer 1920x1080 fmt=28
+[23:56:43.906] ui init scale=1.00
+[23:56:43.906] overlay ready, hwnd=00000000000200c6
+[23:56:44.127] main menu entered
+[23:56:44.127] unlock all applied
+[23:56:44.800] disclaimer accepted
+[23:56:45.611] ui press: kind=0 'Играть'
+[23:56:49.584] ui press: kind=1 'Darker'
+[23:56:50.607] ui press: kind=1 'Extra locks'
+[23:56:52.245] ui press: kind=0 'Продолжить'
+[23:56:52.857] custom ui back: escape
+[23:56:53.438] ui press: kind=0 'Продолжить'
+[23:56:57.587] main menu left
+[23:59:28.970] main menu entered
+[23:59:30.178] ui press: kind=0 'Выйти из игры'
